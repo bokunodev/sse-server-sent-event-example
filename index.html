@@ -1,0 +1,48 @@
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Server-sent events demo</title>
+</head>
+<body>
+    <h1>SSE Example</h1>
+    <button>Close the connection</button>
+    <ul></ul>
+
+    <script>
+        var button = document.querySelector("button");
+        var evtSource = new EventSource("http://localhost/events");
+        console.log(evtSource.withCredentials);
+        console.log(evtSource.readyState);
+        console.log(evtSource.url);
+        var eventList = document.querySelector("ul");
+
+        evtSource.onopen = function() {
+            console.log("Connection to server opened.");
+        };
+
+        evtSource.onmessage = function(e) {
+            console.log("A message from server recieved.");
+            let newElement = document.createElement("li");
+            newElement.innerText = e.data;
+            eventList.appendChild(newElement);
+        };
+
+        evtSource.onerror = function() {
+            console.log("EventSource failed.");
+        };
+
+        button.onclick = function() {
+            console.log("Connection closed");
+            evtSource.close();
+        };
+
+        // evtSource.addEventListener("ping", function(e) {
+        //   var newElement = document.createElement("li");
+        //
+        //   var obj = JSON.parse(e.data);
+        //   newElement.innerHTML = "ping at " + obj.time;
+        //   eventList.appendChild(newElement);
+        // }, false);
+    </script>
+</body>
+</html>
