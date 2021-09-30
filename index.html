@@ -1,48 +1,58 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Server-sent events demo</title>
+    <title>SSE demo</title>
 </head>
 <body>
-    <h1>SSE Example</h1>
-    <button>Close the connection</button>
-    <ul></ul>
+<h1>SSE Demo</h1>
+<button id="sub">subscribe</button>
+<button id="unsub">unsubscribe</button>
+<hr>
+<button id="clear">clear</button>
+<h1 style="color:red;" id="status">DISCONNECTED</h1>
+<ol></ol>
 
-    <script>
-        var button = document.querySelector("button");
-        var evtSource = new EventSource("http://localhost/events");
-        console.log(evtSource.withCredentials);
-        console.log(evtSource.readyState);
-        console.log(evtSource.url);
-        var eventList = document.querySelector("ul");
+<script>
+const eventUpstream = "http://localhost:8000/subscribe"
+const eventStatus = ["CONNECTING","CONNECTED","DISCONNECTED"]
+const notificationList = document.querySelector("ol")
 
-        evtSource.onopen = function() {
-            console.log("Connection to server opened.");
-        };
+let eventSource = null
 
-        evtSource.onmessage = function(e) {
-            console.log("A message from server recieved.");
-            let newElement = document.createElement("li");
-            newElement.innerText = e.data;
-            eventList.appendChild(newElement);
-        };
+function sub() {
+    if (eventSource) {
+        // close previous onnection before open a new connection.
+        eventSource.close()
+    }
+    eventSource = new EventSource(eventUpstream)
+    eventSource.onopen = ()=>{console.info("Connection to server opened.")}
+    eventSource.onmessage = (message)=>{
+        let newNotification = document.createElement("li")
+        newNotification.innerText = `new: ${message.data}`
+        notificationList.appendChild(newNotification)
+    }
+    eventSource.onerror = ()=>{console.error("EventSource failed to start!")}
+}
 
-        evtSource.onerror = function() {
-            console.log("EventSource failed.");
-        };
+function unsub() {
+    eventSource.close()
+}
 
-        button.onclick = function() {
-            console.log("Connection closed");
-            evtSource.close();
-        };
+function clear() {
+    notificationList.innerHTML = ""
+}
 
-        // evtSource.addEventListener("ping", function(e) {
-        //   var newElement = document.createElement("li");
-        //
-        //   var obj = JSON.parse(e.data);
-        //   newElement.innerHTML = "ping at " + obj.time;
-        //   eventList.appendChild(newElement);
-        // }, false);
-    </script>
+function updateStatus() {
+    let status = eventSource ? eventSource.readyState : 2
+    document.querySelector("h1#status").innerText = eventStatus[status]
+}
+
+document.querySelector("#sub").onclick   = sub
+document.querySelector("#clear").onclick = clear
+document.querySelector("#unsub").onclick = unsub
+
+clearInterval()
+setInterval(updateStatus, 2000) // update status every second.
+</script>
 </body>
 </html>

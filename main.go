@@ -1,101 +1,110 @@
 package main
 
 import (
-	"context"
-	"fmt"
+	"bufio"
+	"container/list"
 	"log"
+	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"sync"
-	"time"
+	"syscall"
 )
 
+type subscriber struct {
+	net.Conn
+	bufio.ReadWriter
+}
+
+var subscribers = list.New()
+var subscribersMutex = sync.Mutex{}
+
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	log.SetFlags(log.LstdFlags | log.LUTC)
+	go notifier()
 
-	mux := &http.ServeMux{}
+	http.Handle("/",
+		http.FileServer(http.Dir(".")))
 
-	mux.Handle("/", http.FileServer(http.Dir(".")))
-	mux.HandleFunc("/events", eventsHandler)
+	http.HandleFunc("/subscribe", sub)
 
-	s := http.Server{
-		Addr:    "localhost:8000",
-		Handler: mux,
+	log.Printf("Open http://localhost:8000/ on your browser...")
+	log.Println("Send SIGHUP to pid:", os.Getpid(), "to broadcast notification to user(s)")
+
+	err := http.ListenAndServe(":8000", nil)
+	if err != nil {
+		log.Fatal(err)
 	}
-
-	// disable http keep-alive
-	// s.SetKeepAlivesEnabled(false)
-
-	log.Println("Server started!")
-	// log.Fatal(s.ListenAndServe())
-	log.Fatal(s.ListenAndServeTLS("cert.pem", "key.pem"))
 }
 
-func eventsHandler(rw http.ResponseWriter, r *http.Request) {
-	// preparing the waitgroup and channels
-	wg := &sync.WaitGroup{}
-	// add timeout
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	r = r.WithContext(ctx)
-	messageChannel := make(chan string)
-	// dont forget to close the channel
-	defer close(messageChannel)
+func notifier() {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGHUP)
 
-	// setting all of the necesarry header for SSE
-	rw.Header().Set("Content-Type", "text/event-stream")
-	rw.Header().Set("Access-Control-Allow-Origin", "*")
-	rw.Header().Set("Cache-Control", "no-cache")
-	rw.Header().Set("X-Accel-Buffering:", "no")
+	defer func() {
+		signal.Stop(sigCh)
+		close(sigCh)
+	}()
 
-	// spawn 4 goroutine to generate message
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go worker(i+1, r, messageChannel, wg)
-	}
-
-	// spawn another goroutine to consume the messageChannel and write it to rw (http.ResponseWriter)
-	wg.Add(1)
-	go mesageSender(rw, messageChannel)
-
-	// .... consume the request body, parse form value, handle upload file(s) etc.`
-
-	// i'm not put this in defer, to make it more clear. using defer is absolutely easier.
-	// closing the body
-	_ = r.Body.Close()
-	// and waiting for all of the goroutine to finish
-	wg.Wait()
-}
-
-func worker(x int, r *http.Request, messageChannel chan string, wg *sync.WaitGroup) {
-	defer wg.Done()
-the_loop:
-	for {
-		log.Println("worker number", x, "doing some job...")
-		// produce messages and send it to the channel ...
-		messageChannel <- fmt.Sprintf("message from worker %d %s", x, time.Now().UTC().String())
-		time.Sleep(2 * time.Second)
-		select {
-		case <-r.Context().Done():
-			break the_loop
-		default:
+	// start main loop
+	for range sigCh {
+		subscribersMutex.Lock()
+		if subscribers.Len() > 0 {
+			for elem := subscribers.Front(); elem != nil; elem = elem.Next() {
+				client, _ := elem.Value.(*subscriber)
+				_, err := client.ReadWriter.WriteString("10\r\ndata: hello :)\n\n\r\n")
+				if err != nil {
+					log.Println("client disconnected")
+					client.Conn.Close()
+					subscribers.Remove(elem)
+					continue
+				}
+				err = client.ReadWriter.Flush()
+				if err != nil {
+					log.Println("client disconnected")
+					client.Conn.Close()
+					subscribers.Remove(elem)
+					continue
+				}
+			}
 		}
+
+		subscribersMutex.Unlock()
 	}
-	log.Println("worker number", x, "return", r.Context().Err())
+	// end main loop
 }
 
-func mesageSender(rw http.ResponseWriter, messageChannel chan string) {
-	flusher, ok := rw.(http.Flusher)
+func sub(rw http.ResponseWriter, r *http.Request) {
+	rw.Header().Set("Content-Type", "text/event-stream")
+	rw.Header().Set("Transfer-Encoding", "chunked")
+	rw.Header().Set("Cache-Control", "no-cache")
+
+	f, ok := rw.(http.Flusher)
 	if !ok {
-		log.Println("Client does not suppor SSE")
+		log.Println("client doesn't support streaming")
+		rw.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	f.Flush()
+
+	h, ok := rw.(http.Hijacker)
+	if !ok {
+		log.Println("server doesn't support hijacking")
+		rw.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	for each := range messageChannel {
-		// Send the message to the client (write it to http.ResponseWriter)
-		fmt.Fprintf(rw, "data: %s\n\n", each)
-		// flush the data to the client
-		flusher.Flush()
+	conn, bufrw, err := h.Hijack()
+	if err != nil {
+		log.Println("server failed to hijack the connection")
+		rw.WriteHeader(http.StatusInternalServerError)
+		return
 	}
-	log.Println("mesageSender has returned.")
+
+	subscribersMutex.Lock()
+	defer subscribersMutex.Unlock()
+
+	subscribers.PushFront(&subscriber{Conn: conn, ReadWriter: *bufrw})
 }
